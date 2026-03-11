@@ -10,3 +10,4 @@ chromadb
 sentence-transformers
 yfinance
 yt-dlp
+youtube-transcript-api
