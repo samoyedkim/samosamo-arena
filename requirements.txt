@@ -1,6 +1,8 @@
 streamlit
 openai
 google-genai
+google-generativeai
+python-dotenv
 beautifulsoup4
 requests
 selenium
@@ -8,6 +10,6 @@ webdriver-manager
 finance-datareader
 chromadb
 sentence-transformers
-yfinance
 yt-dlp
-youtube-transcript-api
+gspread
+oauth2client
