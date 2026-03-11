@@ -9,3 +9,4 @@ finance-datareader
 chromadb
 sentence-transformers
 yfinance
+yt-dlp
