@@ -1,0 +1,11 @@
+streamlit
+openai
+google-genai
+beautifulsoup4
+requests
+selenium
+webdriver-manager
+finance-datareader
+chromadb
+sentence-transformers
+yfinance
