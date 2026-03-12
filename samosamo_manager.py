@@ -1,5 +1,3 @@
-# samosamo_manager.py
-
 import warnings
 warnings.filterwarnings("ignore") 
 
@@ -11,6 +9,7 @@ import yt_dlp
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import google.generativeai as genai
+import streamlit as st
 
 # ⚠️ 파트너님의 식권 뭉치(API 키)
 MY_API_KEYS = [
@@ -23,10 +22,19 @@ MODEL_CANDIDATES = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-3-flash
 def connect_to_sheet():
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     try:
-        creds = ServiceAccountCredentials.from_json_keyfile_name('service_account.json', scope)
+        # 💡 [핵심 패치] 하이브리드 인증 로직
+        # 1. 클라우드(Streamlit) 환경: st.secrets 금고에서 열쇠를 꺼냅니다.
+        if hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        # 2. 로컬(PC) 환경: 기존처럼 물리적인 json 파일을 읽습니다.
+        else:
+            creds = ServiceAccountCredentials.from_json_keyfile_name('service_account.json', scope)
+            
         client = gspread.authorize(creds)
         return client.open(SHEET_NAME).sheet1
     except Exception as e:
+        print(f"구글 시트 인증 실패: {e}")
         return None
 
 def sanitize_filename(title):
