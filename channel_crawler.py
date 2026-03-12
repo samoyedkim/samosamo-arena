@@ -1,5 +1,4 @@
-# channel_crawler.py
-
+import streamlit as st
 import yt_dlp
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -36,13 +35,28 @@ SHEET_NAME = "SAMOSAMO_List"
 
 def get_existing_urls():
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    creds = ServiceAccountCredentials.from_json_keyfile_name('service_account.json', scope)
-    client = gspread.authorize(creds)
-    sheet = client.open(SHEET_NAME).sheet1
     
-    urls_col = sheet.col_values(1)
-    existing_urls = urls_col[1:] if len(urls_col) > 1 else []
-    return sheet, existing_urls
+    # 💡 [핵심 패치] 하이브리드 인증 로직
+    try:
+        # 1. 클라우드(Streamlit) 환경: st.secrets 금고에서 열쇠를 꺼냅니다.
+        if hasattr(st, "secrets") and "gcp_service_account" in st.secrets:
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+            print("☁️ 클라우드 금고(Secrets)에서 구글 시트 인증 완료!")
+        # 2. 로컬(PC) 환경: 기존처럼 물리적인 json 파일을 읽습니다.
+        else:
+            creds = ServiceAccountCredentials.from_json_keyfile_name('service_account.json', scope)
+            print("💻 로컬 파일(json)에서 구글 시트 인증 완료!")
+            
+        client = gspread.authorize(creds)
+        sheet = client.open(SHEET_NAME).sheet1
+        
+        urls_col = sheet.col_values(1)
+        existing_urls = urls_col[1:] if len(urls_col) > 1 else []
+        return sheet, existing_urls
+        
+    except Exception as e:
+        raise Exception(f"인증 로직 에러: {e}")
 
 def run_crawler_for_arena():
     """아레나에서 버튼을 눌렀을 때 실행될 메인 자동화 함수"""
