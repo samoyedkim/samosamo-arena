@@ -1,5 +1,3 @@
-# samosamo_indexer.py
-
 import warnings
 warnings.filterwarnings("ignore") 
 
@@ -7,7 +5,8 @@ import os
 import glob
 import time
 import chromadb
-from sentence_transformers import SentenceTransformer
+import streamlit as st
+from openai import OpenAI
 
 def extract_metadata_from_filename(filename):
     """파일명에서 채널명과 제목 분리"""
@@ -52,13 +51,22 @@ def chunk_text_smart(text, chunk_size=800, overlap=200):
 
 def run_indexer_for_arena():
     """💡 아레나 UI에 실시간 중계를 쏴주는 제너레이터 함수"""
-    yield "▶️ 임베딩 엔진(BAAI/bge-m3) 및 도서관(ChromaDB) 연결 중... (최대 10초 소요)"
+    yield "▶️ 임베딩 엔진(OpenAI API) 및 도서관(ChromaDB) 연결 중... (초경량 모드)"
     try:
-        embedder = SentenceTransformer('BAAI/bge-m3')
+        # 1. 클라우드 금고(st.secrets) 또는 로컬에서 OpenAI 열쇠 꺼내기
+        if hasattr(st, "secrets") and "OPENAI_API_KEY" in st.secrets:
+            api_key = st.secrets["OPENAI_API_KEY"]
+        else:
+            api_key = os.getenv("OPENAI_API_KEY") # 로컬 테스트 시 환경변수 사용
+            
+        openai_client = OpenAI(api_key=api_key)
+        
+        # 2. 도서관 연결 및 새로운 책장(OpenAI 전용) 생성
         client = chromadb.PersistentClient(path="./samosamo_db")
-        collection = client.get_or_create_collection(name="samosamo_rag")
+        # 💡 기존 차원(1024)과 충돌하지 않도록 새로운 이름(samosamo_rag_openai)을 부여합니다.
+        collection = client.get_or_create_collection(name="samosamo_rag_openai")
     except Exception as e:
-        yield f"❌ 엔진 로딩 실패: {e}"
+        yield f"❌ 엔진/도서관 로딩 실패: {e}"
         return
 
     txt_files = glob.glob("*.txt")
@@ -87,14 +95,23 @@ def run_indexer_for_arena():
             chunk_id = f"{file_path}_chunk_{j}"
             summary = chunk[:100] + "..." # 프리뷰 요약
             
-            # 임베딩 및 적재
-            embedding = embedder.encode(chunk).tolist()
-            collection.add(
-                documents=[chunk],
-                embeddings=[embedding],
-                metadatas=[{"source": source, "title": title, "summary": summary}],
-                ids=[chunk_id]
-            )
+            # 💡 [핵심 패치] 메모리를 먹는 로컬 모델 대신 OpenAI에 외주(API)를 맡깁니다.
+            try:
+                response = openai_client.embeddings.create(
+                    input=chunk,
+                    model="text-embedding-3-small"
+                )
+                embedding = response.data[0].embedding
+                
+                collection.add(
+                    documents=[chunk],
+                    embeddings=[embedding],
+                    metadatas=[{"source": source, "title": title, "summary": summary}],
+                    ids=[chunk_id]
+                )
+            except Exception as e:
+                yield f"   ❌ 임베딩 API 호출 실패: {e}"
+                continue
             
         yield f"   ✅ '{title}' 입고 완료!"
         
