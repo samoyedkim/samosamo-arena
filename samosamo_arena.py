@@ -10,7 +10,6 @@ import re
 from bs4 import BeautifulSoup
 import streamlit as st
 import chromadb
-from sentence_transformers import SentenceTransformer
 from google import genai
 from openai import AsyncOpenAI, OpenAI
 from dotenv import load_dotenv
@@ -46,22 +45,31 @@ MACRO_FILE = "alfredo_macros.json"
 # ==========================================
 @st.cache_resource
 def load_engines():
-    embedder = SentenceTransformer('BAAI/bge-m3')
+    # 💡 [패치] 클라우드 금고(st.secrets) 또는 로컬에서 OpenAI 열쇠 꺼내기
+    if hasattr(st, "secrets") and "OPENAI_API_KEY" in st.secrets:
+        openai_key = st.secrets["OPENAI_API_KEY"]
+    else:
+        openai_key = OPENAI_API_KEY
+
     chroma_client = chromadb.PersistentClient(path="./samosamo_db")
-    collection = chroma_client.get_or_create_collection(name="samosamo_rag")
+    # 💡 [패치] 무거운 로컬 엔진을 버리고, 새롭게 명명된 OpenAI 전용 책장을 엽니다.
+    collection = chroma_client.get_or_create_collection(name="samosamo_rag_openai")
+    
     gemini_kbs = genai.Client(api_key=GEMINI_API_KEY_1) if GEMINI_API_KEY_1 else None
     gemini_maeil = genai.Client(api_key=GEMINI_API_KEY_2) if GEMINI_API_KEY_2 else None
     gemini_sampro = genai.Client(api_key=GEMINI_API_KEY_3) if GEMINI_API_KEY_3 else None
-    async_openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-    sync_openai_client = OpenAI(api_key=OPENAI_API_KEY)
-    return embedder, collection, gemini_kbs, gemini_maeil, gemini_sampro, async_openai_client, sync_openai_client
+    
+    async_openai_client = AsyncOpenAI(api_key=openai_key)
+    sync_openai_client = OpenAI(api_key=openai_key)
+    
+    # 💡 [패치] embedder 객체는 더 이상 사용하지 않으므로 반환 목록에서 제거했습니다.
+    return collection, gemini_kbs, gemini_maeil, gemini_sampro, async_openai_client, sync_openai_client
 
-embedder, collection, gemini_kbs, gemini_maeil, gemini_sampro, async_openai_client, sync_openai_client = load_engines()
+collection, gemini_kbs, gemini_maeil, gemini_sampro, async_openai_client, sync_openai_client = load_engines()
 
 @st.cache_data
 def get_krx_ticker_map():
     try:
-        # 일반 주식(KRX)과 ETF 목록을 모두 가져와서 하나의 거대한 사전으로 병합합니다.
         df_krx = fdr.StockListing('KRX')
         df_etf = fdr.StockListing('ETF/KR')
         ticker_map = dict(zip(df_krx['Name'], df_krx['Code']))
@@ -105,15 +113,14 @@ def save_macros():
 # 3. 사이드바 UI & 💡[모바일 SOS 기능]
 # ==========================================
 with st.sidebar:
-    # --- 모바일 원클릭 에러 리포트 ---
     st.header("🐞 제레에게 SOS 치기")
     st.markdown("오류 발생 시 아래 박스의 우측 상단 **복사 아이콘**을 눌러 제레에게 전달해주세요.")
     
     if st.session_state.chat_history:
         sos_log = "🚨 [모바일 테스트 SOS 리포트]\n\n"
-        for msg in st.session_state.chat_history[-4:]: # 최근 4개 대화 추출
+        for msg in st.session_state.chat_history[-4:]:
             sos_log += f"[{msg['name']}]\n{msg['content']}\n\n"
-        st.code(sos_log, language="text") # 스트림릿이 자동으로 복사 버튼을 생성해 줍니다!
+        st.code(sos_log, language="text")
     else:
         st.info("아직 대화 기록이 없습니다.")
         
@@ -173,7 +180,6 @@ def tool_get_market_ranking(rank_type="volume", top_n=10):
         table = soup.find('table', {'class': 'type_2'})
         result = []
         
-        # 💡 [핵심 패치] ETF 페이지의 표 구조에 맞게 a 태그(링크) 안의 텍스트만 쏙 빼옵니다.
         for r in table.find_all('tr'):
             a_tag = r.find('a')
             if a_tag and r.find('td', class_='num'): 
@@ -366,7 +372,10 @@ if master_input:
             
         selected_pid = random.choice(eligible)
         history_text = "\n".join([f"[{c['name']}] {c['content']}" for c in st.session_state.chat_history[-4:]])
-        query_embedding = embedder.encode([st.session_state.topic], show_progress_bar=False)[0].tolist()
+        
+        # 💡 [핵심 패치] OpenAI API를 호출하여 입력 텍스트를 숫자로(임베딩) 변환합니다.
+        embed_res = sync_openai_client.embeddings.create(input=st.session_state.topic, model="text-embedding-3-small")
+        query_embedding = embed_res.data[0].embedding
         
         with st.spinner(f"🎙️ {PANELS[selected_pid]['name']}({PANELS[selected_pid]['ai']}) 패널이 발언 준비 중..."):
             loop = asyncio.new_event_loop()
@@ -388,7 +397,11 @@ if st.session_state.chat_history:
                 eligible = list(PANELS.keys())
             selected_pid = random.choice(eligible)
             history_text = "\n".join([f"[{c['name']}] {c['content']}" for c in st.session_state.chat_history[-4:]])
-            query_embedding = embedder.encode([st.session_state.topic], show_progress_bar=False)[0].tolist()
+            
+            # 💡 [핵심 패치] 여기서도 OpenAI API 임베딩을 사용합니다.
+            embed_res = sync_openai_client.embeddings.create(input=st.session_state.topic, model="text-embedding-3-small")
+            query_embedding = embed_res.data[0].embedding
+            
             with st.spinner(f"🎙️ {PANELS[selected_pid]['name']} 발언 중..."):
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
