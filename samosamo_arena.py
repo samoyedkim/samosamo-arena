@@ -147,10 +147,19 @@ with st.sidebar:
     st.header("🛠️ 도서관 업데이트")
     if st.button("🚀 원클릭 파이프라인 가동", type="primary", use_container_width=True):
         with st.status("도서관 업데이트 가동 중...", expanded=True) as status:
-            st.write("**[1단계] 스크래핑**"); st.code(channel_crawler.run_crawler_for_arena())
-            st.write("**[2단계] 대본 추출**"); [st.write(m) for m in samosamo_manager.run_manager_for_arena()]
-            st.write("**[3단계] DB 입고**"); [st.write(m) for m in samosamo_indexer.run_indexer_for_arena()]
+            st.write("**[1단계] 스크래핑**")
+            st.code(channel_crawler.run_crawler_for_arena())
+            
+            st.write("**[2단계] 대본 추출**")
+            for m in samosamo_manager.run_manager_for_arena():
+                st.write(m)
+                
+            st.write("**[3단계] DB 입고**")
+            for m in samosamo_indexer.run_indexer_for_arena():
+                st.write(m)
+                
             status.update(label="도서관 업데이트 완료!", state="complete", expanded=False)
+
 
 # ==========================================
 # 4. 알프레도 4대 금융 무기 + 기본 도구
