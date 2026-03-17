@@ -10,7 +10,6 @@ import re
 from bs4 import BeautifulSoup
 import streamlit as st
 import chromadb
-from sentence_transformers import SentenceTransformer
 from google import genai
 from openai import AsyncOpenAI, OpenAI
 from dotenv import load_dotenv
@@ -42,21 +41,31 @@ SCRIBE_FILE = "samosamo_scribe.json"
 MACRO_FILE = "alfredo_macros.json"
 
 # ==========================================
-# 1. 엔진, 도서관 & 통합 티커 사전 로드
+# 1. 엔진, 도서관 & 💡[통합 티커 사전] 로드
 # ==========================================
 @st.cache_resource
 def load_engines():
-    embedder = SentenceTransformer('BAAI/bge-m3')
+    # 💡 [패치] 클라우드 금고(st.secrets) 또는 로컬에서 OpenAI 열쇠 꺼내기
+    if hasattr(st, "secrets") and "OPENAI_API_KEY" in st.secrets:
+        openai_key = st.secrets["OPENAI_API_KEY"]
+    else:
+        openai_key = OPENAI_API_KEY
+
     chroma_client = chromadb.PersistentClient(path="./samosamo_db")
-    collection = chroma_client.get_or_create_collection(name="samosamo_rag")
+    # 💡 [패치] 무거운 로컬 엔진을 버리고, 새롭게 명명된 OpenAI 전용 책장을 엽니다.
+    collection = chroma_client.get_or_create_collection(name="samosamo_rag_openai")
+    
     gemini_kbs = genai.Client(api_key=GEMINI_API_KEY_1) if GEMINI_API_KEY_1 else None
     gemini_maeil = genai.Client(api_key=GEMINI_API_KEY_2) if GEMINI_API_KEY_2 else None
     gemini_sampro = genai.Client(api_key=GEMINI_API_KEY_3) if GEMINI_API_KEY_3 else None
-    async_openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-    sync_openai_client = OpenAI(api_key=OPENAI_API_KEY)
-    return embedder, collection, gemini_kbs, gemini_maeil, gemini_sampro, async_openai_client, sync_openai_client
+    
+    async_openai_client = AsyncOpenAI(api_key=openai_key)
+    sync_openai_client = OpenAI(api_key=openai_key)
+    
+    # 💡 [패치] embedder 객체는 더 이상 사용하지 않으므로 반환 목록에서 제거했습니다.
+    return collection, gemini_kbs, gemini_maeil, gemini_sampro, async_openai_client, sync_openai_client
 
-embedder, collection, gemini_kbs, gemini_maeil, gemini_sampro, async_openai_client, sync_openai_client = load_engines()
+collection, gemini_kbs, gemini_maeil, gemini_sampro, async_openai_client, sync_openai_client = load_engines()
 
 @st.cache_data
 def get_krx_ticker_map():
@@ -101,7 +110,7 @@ def save_macros():
         json.dump(st.session_state.macros, f, ensure_ascii=False, indent=2)
 
 # ==========================================
-# 3. 사이드바 UI
+# 3. 사이드바 UI & 💡[모바일 SOS 기능]
 # ==========================================
 with st.sidebar:
     st.header("🐞 제레에게 SOS 치기")
@@ -109,9 +118,9 @@ with st.sidebar:
     
     if st.session_state.chat_history:
         sos_log = "🚨 [모바일 테스트 SOS 리포트]\n\n"
-        for msg in st.session_state.chat_history[-4:]: 
+        for msg in st.session_state.chat_history[-4:]:
             sos_log += f"[{msg['name']}]\n{msg['content']}\n\n"
-        st.code(sos_log, language="text") 
+        st.code(sos_log, language="text")
     else:
         st.info("아직 대화 기록이 없습니다.")
         
@@ -138,13 +147,22 @@ with st.sidebar:
     st.header("🛠️ 도서관 업데이트")
     if st.button("🚀 원클릭 파이프라인 가동", type="primary", use_container_width=True):
         with st.status("도서관 업데이트 가동 중...", expanded=True) as status:
-            st.write("**[1단계] 스크래핑**"); st.code(channel_crawler.run_crawler_for_arena())
-            st.write("**[2단계] 대본 추출**"); [st.write(m) for m in samosamo_manager.run_manager_for_arena()]
-            st.write("**[3단계] DB 입고**"); [st.write(m) for m in samosamo_indexer.run_indexer_for_arena()]
+            st.write("**[1단계] 스크래핑**")
+            st.code(channel_crawler.run_crawler_for_arena())
+            
+            st.write("**[2단계] 대본 추출**")
+            for m in samosamo_manager.run_manager_for_arena():
+                st.write(m)
+                
+            st.write("**[3단계] DB 입고**")
+            for m in samosamo_indexer.run_indexer_for_arena():
+                st.write(m)
+                
             status.update(label="도서관 업데이트 완료!", state="complete", expanded=False)
 
+
 # ==========================================
-# 4. 알프레도 전술 금융 무기 (V6 패치 이식)
+# 4. 알프레도 4대 금융 무기 + 기본 도구
 # ==========================================
 def tool_get_market_index():
     try:
@@ -159,14 +177,6 @@ def tool_get_market_index():
 
 def tool_get_market_ranking(rank_type="volume", top_n=10):
     try:
-        # ETF 상승률 전용 API 로직 이식
-        if rank_type == "etf_rise":
-            res = requests.get("https://finance.naver.com/api/sise/etfItemList.nhn", headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
-            etf_list = res.json().get('result', {}).get('etfItemList', [])
-            sorted_etf = sorted(etf_list, key=lambda x: x.get('changeRate', 0), reverse=True)
-            result = [{"종목명": item['itemname'], "상승률": f"{item['changeRate']}%"} for item in sorted_etf[:top_n]]
-            return json.dumps({"rank_type": rank_type, "data": result}, ensure_ascii=False)
-
         urls = {
             "volume": "https://finance.naver.com/sise/sise_quant.naver",
             "foreign": "https://finance.naver.com/sise/sise_foreign_up.naver",
@@ -175,15 +185,16 @@ def tool_get_market_ranking(rank_type="volume", top_n=10):
             "etf_volume": "https://finance.naver.com/sise/etf.naver"
         }
         res = requests.get(urls.get(rank_type, urls["volume"]), headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
-        res.encoding = 'euc-kr' # 한글 깨짐 방지 패치
         soup = BeautifulSoup(res.text, 'html.parser')
         table = soup.find('table', {'class': 'type_2'})
         result = []
+        
         for r in table.find_all('tr'):
             a_tag = r.find('a')
             if a_tag and r.find('td', class_='num'): 
                 result.append({"종목명": a_tag.text.strip()})
             if len(result) >= top_n: break
+            
         return json.dumps({"rank_type": rank_type, "data": result}, ensure_ascii=False)
     except Exception as e: return json.dumps({"error": f"랭킹 조회 실패: {str(e)}"})
 
@@ -202,47 +213,6 @@ def tool_get_company_finance(name):
             "배당수익률": soup.select_one('#_dvr').text.strip() + "%" if soup.select_one('#_dvr') else "N/A"
         }, ensure_ascii=False)
     except Exception as e: return json.dumps({"error": f"재무 조회 실패: {str(e)}"})
-
-# 신규 무기 1: 테마 검색기 이식
-def tool_get_theme_ranking(top_n=5):
-    try:
-        res = requests.get("https://finance.naver.com/sise/theme.naver", headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
-        res.encoding = 'euc-kr'
-        soup = BeautifulSoup(res.text, 'html.parser')
-        table = soup.select_one('.type_1.theme')
-        result = []
-        for tr in table.find_all('tr'):
-            tds = tr.find_all('td')
-            if len(tds) > 2 and tds[0].find('a'):
-                theme_name = tds[0].find('a').text.strip()
-                rise_rate = tds[1].text.strip()
-                lead_stocks = tds[2].text.strip().replace('\n', ' ')
-                result.append({"테마명": theme_name, "상승률": rise_rate, "주도주": lead_stocks})
-            if len(result) >= top_n: break
-        return json.dumps({"data": result}, ensure_ascii=False)
-    except Exception as e: return json.dumps({"error": f"테마 조회 실패: {str(e)}"})
-
-# 신규 무기 2: 수급 탐지기 이식
-def tool_get_investor_trend(name):
-    try:
-        krx_map = get_krx_ticker_map()
-        ticker = krx_map.get(name)
-        if not ticker: return json.dumps({"error": f"'{name}' 종목코드 없음."})
-        res = requests.get(f"https://finance.naver.com/item/frgn.naver?code={ticker}", headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
-        res.encoding = 'euc-kr'
-        soup = BeautifulSoup(res.text, 'html.parser')
-        table = soup.select_one('.type2')
-        rows = table.find_all('tr', onmouseover="mouseOver(this)")
-        if not rows: return json.dumps({"error": "수급 데이터 없음"})
-        cols = rows[0].find_all('td')
-        return json.dumps({
-            "종목명": name,
-            "날짜": cols[0].text.strip(),
-            "기관순매매": cols[5].text.strip(),
-            "외국인순매매": cols[6].text.strip(),
-            "외국인보유율": cols[8].text.strip() + "%"
-        }, ensure_ascii=False)
-    except Exception as e: return json.dumps({"error": f"수급 조회 실패: {str(e)}"})
 
 def tool_get_historical_data(names, start_date, end_date):
     try:
@@ -294,17 +264,15 @@ def tool_search_news(query, count=5):
 
 tools_schema = [
     {"type": "function", "function": {"name": "get_market_index", "description": "국내 주요 증시 지수(코스피, 코스닥)와 환율을 가져옵니다.", "parameters": { "type": "object", "properties": {} }}},
-    {"type": "function", "function": {"name": "get_market_ranking", "description": "조건에 맞는 종목 랭킹을 가져옵니다.", "parameters": {"type": "object", "properties": {"rank_type": {"type": "string", "enum": ["volume", "foreign", "rise", "fall", "etf_volume", "etf_rise"], "description": "순위 종류 (etf_rise: ETF상승률 추가됨)"}, "top_n": {"type": "integer", "description": "상위 개수"}}, "required": ["rank_type"]}}},
+    {"type": "function", "function": {"name": "get_market_ranking", "description": "조건에 맞는 종목 랭킹을 가져옵니다.", "parameters": {"type": "object", "properties": {"rank_type": {"type": "string", "enum": ["volume", "foreign", "rise", "fall", "etf_volume"], "description": "순위 종류 (volume: 코스피거래량, foreign: 코스피외국인, rise: 코스피상승, fall: 코스피하락, etf_volume: ETF거래량)"}, "top_n": {"type": "integer", "description": "상위 개수"}}, "required": ["rank_type"]}}},
     {"type": "function", "function": {"name": "get_company_finance", "description": "특정 종목의 시가총액, PER, PBR 등 재무 정보를 가져옵니다.", "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "종목명"}}, "required": ["name"]}}},
-    {"type": "function", "function": {"name": "get_theme_ranking", "description": "가장 크게 상승 중인 주도 테마와 관련 주도주를 가져옵니다.", "parameters": {"type": "object", "properties": {"top_n": {"type": "integer"}}, "required": ["top_n"]}}},
-    {"type": "function", "function": {"name": "get_investor_trend", "description": "특정 종목의 최근 기관 및 외국인 수급 동향을 가져옵니다.", "parameters": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}}},
-    {"type": "function", "function": {"name": "get_historical_data", "description": "여러 종목의 특정 기간 동안의 일일 주가(종가) 변동을 가져옵니다.", "parameters": {"type": "object", "properties": {"names": {"type": "array", "items": {"type": "string"}}, "start_date": {"type": "string"}, "end_date": {"type": "string"}}, "required": ["names", "start_date", "end_date"]}}},
+    {"type": "function", "function": {"name": "get_historical_data", "description": "여러 종목의 특정 기간 동안의 일일 주가(종가) 변동을 가져옵니다.", "parameters": {"type": "object", "properties": {"names": {"type": "array", "items": {"type": "string"}, "description": "종목명 목록"}, "start_date": {"type": "string", "description": "시작일 (YYYY-MM-DD)"}, "end_date": {"type": "string", "description": "종료일 (YYYY-MM-DD)"}}, "required": ["names", "start_date", "end_date"]}}},
     {"type": "function", "function": {"name": "search_news", "description": "최신 뉴스를 검색합니다.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "count": {"type": "integer"}}, "required": ["query"]}}},
     {"type": "function", "function": {"name": "read_website", "description": "웹사이트 접속 도구.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}}
 ]
 
 # ==========================================
-# 5. 패널 난타전 엔진 (기존과 동일)
+# 5. 패널 난타전 엔진
 # ==========================================
 def sync_generate_gemini(client, prompt):
     if not client: return "Gemini API 키 오류"
@@ -358,7 +326,7 @@ if master_input:
 
 [🔥 2단계 연계 작업(Tool Chaining) 및 데이터 포맷팅 절대 원칙 🔥]
 1. 도구 연계(Chaining) 필수: 마스터가 "거래량 상위 N개의 과거 주가 변동을 표로 만들어라"처럼 랭킹과 과거 데이터를 동시에 요구하면, 절대 한 번에 끝내려 하지 마라.
-   - [1단계] `get_market_ranking` 도구를 호출하여 정확한 종목명 N개를 먼저 확보한다. (ETF 조건 시 반드시 etf_volume 혹은 etf_rise 사용)
+   - [1단계] `get_market_ranking` 도구를 호출하여 정확한 종목명 N개를 먼저 확보한다. (ETF 조건 시 반드시 etf_volume 사용)
    - [2단계] 확보한 종목명 리스트를 그대로 `get_historical_data` 도구에 넣어 과거 주가 데이터를 조회한다. (날짜는 오늘 날짜인 {today_str}를 기준으로 정확히 계산)
 2. 수량 절대 준수: 20개를 요구하면 20개를 반드시 끝까지 채워라.
 3. 완벽한 마크다운 표(Markdown Table): 최종 답변은 반드시 행과 열이 정렬된 깔끔한 마크다운 표 형식으로 작성해라.
@@ -378,12 +346,9 @@ if master_input:
                         args = json.loads(tool_call.function.arguments)
                         fn_name = tool_call.function.name
                         
-                        # 신규 무기 라우팅 패치
                         if fn_name == "get_market_index": tool_result = tool_get_market_index()
                         elif fn_name == "get_market_ranking": tool_result = tool_get_market_ranking(args.get("rank_type", "volume"), args.get("top_n", 10))
                         elif fn_name == "get_company_finance": tool_result = tool_get_company_finance(args["name"])
-                        elif fn_name == "get_theme_ranking": tool_result = tool_get_theme_ranking(args.get("top_n", 5))
-                        elif fn_name == "get_investor_trend": tool_result = tool_get_investor_trend(args["name"])
                         elif fn_name == "get_historical_data": tool_result = tool_get_historical_data(args["names"], args["start_date"], args["end_date"])
                         elif fn_name == "search_news": tool_result = tool_search_news(args["query"], args.get("count", 5))
                         elif fn_name == "read_website": tool_result = tool_read_website(args["url"])
@@ -416,7 +381,10 @@ if master_input:
             
         selected_pid = random.choice(eligible)
         history_text = "\n".join([f"[{c['name']}] {c['content']}" for c in st.session_state.chat_history[-4:]])
-        query_embedding = embedder.encode([st.session_state.topic], show_progress_bar=False)[0].tolist()
+        
+        # 💡 [핵심 패치] OpenAI API를 호출하여 입력 텍스트를 숫자로(임베딩) 변환합니다.
+        embed_res = sync_openai_client.embeddings.create(input=st.session_state.topic, model="text-embedding-3-small")
+        query_embedding = embed_res.data[0].embedding
         
         with st.spinner(f"🎙️ {PANELS[selected_pid]['name']}({PANELS[selected_pid]['ai']}) 패널이 발언 준비 중..."):
             loop = asyncio.new_event_loop()
@@ -438,7 +406,11 @@ if st.session_state.chat_history:
                 eligible = list(PANELS.keys())
             selected_pid = random.choice(eligible)
             history_text = "\n".join([f"[{c['name']}] {c['content']}" for c in st.session_state.chat_history[-4:]])
-            query_embedding = embedder.encode([st.session_state.topic], show_progress_bar=False)[0].tolist()
+            
+            # 💡 [핵심 패치] 여기서도 OpenAI API 임베딩을 사용합니다.
+            embed_res = sync_openai_client.embeddings.create(input=st.session_state.topic, model="text-embedding-3-small")
+            query_embedding = embed_res.data[0].embedding
+            
             with st.spinner(f"🎙️ {PANELS[selected_pid]['name']} 발언 중..."):
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
